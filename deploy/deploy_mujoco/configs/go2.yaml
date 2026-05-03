@@ -1,0 +1,46 @@
+#
+policy_path: "{LEGGED_GYM_ROOT_DIR}/deploy/pre_train/go2/policy_1.pt"
+xml_path: "{LEGGED_GYM_ROOT_DIR}/resources/robots/go2/scene.xml"
+
+# Total simulation time
+simulation_duration: 600.0
+# Simulation time step
+simulation_dt: 0.002
+# Controller update frequency (meets the requirement of simulation_dt * controll_decimation=0.02; 50Hz)
+control_decimation: 10
+
+# MuJoCo actuator interpretation:
+# - anymal_c.xml uses <position ...> actuators, so `ctrl` is a joint position target (radians).
+# - for robots using <motor ...> actuators, set this to "torque".
+actuator_mode: torque
+
+kps: [20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20, 20]
+kds: [0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5, 0.5]
+
+# Policy/IsaacGym DOF order (from anymal_c.urdf): used to map policy actions/obs to Mujoco actuator order.
+policy_dof_names:
+  - FL_hip_joint
+  - FL_thigh_joint
+  - FL_calf_joint
+  - FR_hip_joint
+  - FR_thigh_joint
+  - FR_calf_joint
+  - RL_hip_joint
+  - RL_thigh_joint
+  - RL_calf_joint
+  - RR_hip_joint
+  - RR_thigh_joint
+  - RR_calf_joint
+
+# FIXME: 这个是对应mujoco里面还是isaac里面的顺序呢?
+default_angles: [0.1, 0.8, -1.5, -0.1, 0.8, -1.5, 0.1, 1, -1.5, -0.1, 1, -1.5]
+
+ang_vel_scale: 0.25
+dof_pos_scale: 1.0
+dof_vel_scale: 0.05
+action_scale: 0.25
+cmd_scale: [2.0, 2.0, 0.25]
+num_actions: 12
+num_obs: 48
+
+cmd_init: [0.0, 0, 0]
