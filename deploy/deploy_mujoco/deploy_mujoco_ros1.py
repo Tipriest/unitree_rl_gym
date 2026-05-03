@@ -1,4 +1,5 @@
 import time
+import threading
 
 import mujoco.viewer
 import mujoco
@@ -8,11 +9,72 @@ import torch
 import yaml
 from typing import List, Tuple
 
-def quat_conjugate(q_wxyz: np.ndarray) -> np.ndarray:
+
+
+
+class CmdVelReceiver:
+    """ROS1 /cmd_vel receiver.
+
+    Maps geometry_msgs/Twist to cmd = [vx, vy, wz] (policy command order).
     """
+
+    def __init__(self, topic: str = "/cmd_vel") -> None:
+        self._lock = threading.Lock()
+        self._cmd = np.zeros(3, dtype=np.float32)
+        self._last_msg_time = None  # type: float | None
+
+        try:
+            import rospy  # type: ignore
+            from geometry_msgs.msg import Twist  # type: ignore
+        except Exception as e:  # pragma: no cover
+            raise ImportError(
+                "ROS1 python packages not available. "
+                "Please source your ROS1 environment (e.g. `source /opt/ros/noetic/setup.bash`) "
+                "and ensure `rospy` + `geometry_msgs` are installed."
+            ) from e
+
+        self._rospy = rospy
+        self._Twist = Twist
+
+        self._sub = rospy.Subscriber(topic, Twist, self._cb, queue_size=1)
+
+    def _cb(self, msg) -> None:
+        cmd = np.array([msg.linear.x, msg.linear.y, msg.angular.z], dtype=np.float32)
+        with self._lock:
+            self._cmd[:] = cmd
+            try:
+                self._last_msg_time = float(self._rospy.get_time())
+            except Exception:
+                self._last_msg_time = time.time()
+
+    def get_cmd(self) -> np.ndarray:
+        with self._lock:
+            return self._cmd.copy()
+
+    @property
+    def last_msg_time(self):
+        with self._lock:
+            return self._last_msg_time
+
+# ROS1 subscriber for /cmd_vel
+cmd_vel_receiver = None
+try:
+    import rospy  # type: ignore
+
+    rospy.init_node("deploy_mujoco", anonymous=True, disable_signals=True)
+    cmd_vel_receiver = CmdVelReceiver(topic="/cmd_vel")
+    print("[deploy_mujoco_ros1] ROS1 subscribed to: /cmd_vel")
+except Exception as e:
+    print(f"[deploy_mujoco_ros1] ROS1 init/subscribe failed: {e}")
+    print("[deploy_mujoco_ros1] Continuing without ROS commands (using cmd_init).")
+    cmd_vel_receiver = None
+
+def quat_conjugate(q_wxyz: np.ndarray) -> np.ndarray:
+    """_summary_
     求共轭四元数
     前提是该四元数归一化为单位四元数
-    在 3D 旋转中, 如果你的四元数是单位四元数(norm=1), 那么四元数的逆(共轭就是它的逆), 常用于把“从 A 到 B 的旋转”变成“从 B 回到 A 的旋转”
+    在 3D 旋转中, 如果你的四元数是单位四元数(norm=1), 那么:
+    四元数的逆, 共轭就是它的逆, 常用于把“从 A 到 B 的旋转”变成“从 B 回到 A 的旋转”
     Args:
         q_wxyz (np.ndarray): _description_
 
@@ -56,7 +118,7 @@ def quat_rotate_inverse(q_wxyz: np.ndarray, v_xyz: np.ndarray) -> np.ndarray:
     return quat_apply(quat_conjugate(q_wxyz), v_xyz)
 
 def get_actuated_joint_names_in_ctrl_order(model: mujoco.MjModel) -> List[str]:
-    """按照mujoco控制量(actuator)的顺序, 返回对应的关节名字列表
+    """按照控制量（actuator）的顺序，返回对应的关节名字列表
     Args:
         model (mujoco.MjModel): _description_
 
@@ -78,7 +140,7 @@ def get_actuated_joint_names_in_ctrl_order(model: mujoco.MjModel) -> List[str]:
     return names
 
 def get_actuated_q_dq_in_ctrl_order(model: mujoco.MjModel, data: mujoco.MjData) -> Tuple[np.ndarray, np.ndarray]:
-    """按mujoco中控制量(actuator)的顺序, 取出对应关节的一维位置 q 和速度 dq, 并返回两个对齐的数组。
+    """按控制量（actuator）的顺序，取出对应关节的一维位置 q 和速度 dq，并返回两个对齐的数组。
 
     Args:
         model (mujoco.MjModel): _description_
@@ -115,24 +177,21 @@ def pd_control(target_q, q, kp, target_dq, dq, kd):
     """Calculates torques from position commands"""
     return (target_q - q) * kp + (target_dq - dq) * kd
 
-def parse_config_file():
-    """get config file name from command line"""
+if __name__ == "__main__":
+    # get config file name from command line
     import argparse
 
     parser = argparse.ArgumentParser()
     parser.add_argument("config_file", type=str, help="config file name in the config folder")
     args = parser.parse_args()
     config_file = args.config_file
-    return config_file
-
-if __name__ == "__main__":
-    config_file = parse_config_file()
     with open(f"{LEGGED_GYM_ROOT_DIR}/deploy/deploy_mujoco/configs/{config_file}", "r") as f:
         config = yaml.load(f, Loader=yaml.FullLoader)
         policy_path = config["policy_path"].replace("{LEGGED_GYM_ROOT_DIR}", LEGGED_GYM_ROOT_DIR)
         xml_path = config["xml_path"].replace("{LEGGED_GYM_ROOT_DIR}", LEGGED_GYM_ROOT_DIR)
 
         simulation_duration = config["simulation_duration"]
+        simulation_dt = config["simulation_dt"]
         control_decimation = config["control_decimation"]
 
         kps = np.array(config["kps"], dtype=np.float32)
@@ -164,6 +223,8 @@ if __name__ == "__main__":
     obs = np.zeros(num_obs, dtype=np.float32)
 
     counter = 0
+
+
 
     # Load robot model
     m = mujoco.MjModel.from_xml_path(xml_path)
@@ -238,6 +299,10 @@ if __name__ == "__main__":
             if counter % control_decimation == 0:
                 # Apply control signal here.
 
+                # Update commands from ROS1 /cmd_vel (vx, vy, wz) if available.
+                if cmd_vel_receiver is not None:
+                    cmd = cmd_vel_receiver.get_cmd()
+
                 # Create observations in *policy dof order*.
                 q_policy = q_mj[mujoco_index_for_policy]
                 dq_policy = dq_mj[mujoco_index_for_policy]
@@ -246,8 +311,6 @@ if __name__ == "__main__":
                 quat_wxyz = d.qpos[3:7].astype(np.float32)
                 lin_vel_world = d.qvel[0:3].astype(np.float32)
                 ang_vel_world = d.qvel[3:6].astype(np.float32)
-
-                # 计算机体线速度和机体角速度
                 base_lin_vel = quat_rotate_inverse(quat_wxyz, lin_vel_world)
                 base_ang_vel = quat_rotate_inverse(quat_wxyz, ang_vel_world)
                 projected_gravity = quat_rotate_inverse(quat_wxyz, np.array([0.0, 0.0, -1.0], dtype=np.float32))

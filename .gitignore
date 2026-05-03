@@ -160,3 +160,7 @@ cython_debug/
 
 # logs
 logs
+
+pre_train/
+
+MUJOCO_LOG.TXT
