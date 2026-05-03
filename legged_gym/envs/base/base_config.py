@@ -4,7 +4,7 @@ class BaseConfig:
     def __init__(self) -> None:
         """ Initializes all member classes recursively. Ignores all namse starting with '__' (buit-in methods)."""
         self.init_member_classes(self)
-    
+
     @staticmethod
     def init_member_classes(obj):
         # iterate over all attributes names
